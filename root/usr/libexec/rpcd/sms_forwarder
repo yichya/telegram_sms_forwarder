@@ -1,0 +1,258 @@
+#!/usr/bin/env lua
+
+local json = require "luci.jsonc"
+local UCI = require "luci.model.uci"
+local math = require "math"
+local io = require "io"
+local nixio = require "nixio"
+local config = UCI:get_all("sms_forwarder", UCI:get_first("sms_forwarder", "general"))
+
+local function ucs2_to_utf8(ucs2)
+    if ucs2 == nil then
+        return ""
+    end
+    local res = ""
+    for i = 1, string.len(ucs2), 4 do
+        local c1 = string.sub(ucs2, i, i + 1)
+        local c2 = string.sub(ucs2, i + 2, i + 3)
+        local chr = tonumber(c1 .. c2, 16)
+        if chr < 0x80 then
+            res = res .. string.char(chr)
+        elseif chr < 0x800 then
+            local b1 = math.floor(chr / 64)
+            local b2 = math.fmod(chr, 64)
+            res = res .. string.char(192 + b1, 128 + b2)
+        else
+            local b1 = math.fmod(math.floor(chr / 4096), 16)
+            local b2 = math.fmod(math.floor(chr / 64), 64)
+            local b3 = chr % 64
+            res = res .. string.char(224 + b1, 128 + b2, 128 + b3)
+        end
+    end
+    return res
+end
+
+local function list_messages()
+    local handle = io.popen(string.format("uqmi -d %s --list-messages", config.device))
+    local result = handle:read("*a")
+    handle:close()
+    return json.parse(result)
+end
+
+local function get_message_part(id)
+    local handle = io.popen(string.format("uqmi -d %s --get-message %d", config.device, id))
+    local result = handle:read("*a")
+    handle:close()
+    local parsed = json.parse(result)
+    parsed["id"] = id
+    return parsed
+end
+
+local function get_messages()
+    local msg_ids = list_messages()
+    local concat_map = {}
+    local completed_message_map = {}
+    for index, message_id in ipairs(msg_ids) do
+        local msg = get_message_part(message_id)
+        if msg["concat_ref"] == nil then
+            local text = msg["text"]
+            if text == nil then
+                text = ucs2_to_utf8(msg["ucs-2"])
+            end
+            table.insert(completed_message_map, {
+                date = msg["timestamp"],
+                from = msg["sender"],
+                text = text,
+                ids = {message_id}
+            })
+        else
+            local concat_ref = tostring(msg["concat_ref"])
+            if concat_map[concat_ref] == nil then
+                concat_map[concat_ref] = {
+                    from = msg["sender"],
+                    concat_ref = msg["concat_ref"],
+                    concat_parts = msg["concat_parts"],
+                    date = msg["timestamp"],
+                    parts = {}
+                }
+            end
+            concat_map[concat_ref]["parts"][msg["concat_part"]] = msg
+        end
+    end
+
+    for concat_ref, message in pairs(concat_map) do
+        local count = 0
+        local concat_parts = message["concat_parts"]
+        local concat_message = {
+            from = message["from"],
+            date = message["date"],
+            text = "",
+            ids = {}
+        }
+        local temp_ucs2 = ""
+        for index, part in ipairs(message["parts"]) do
+            if part ~= nil then
+                table.insert(concat_message["ids"], part["id"])
+                count = count + 1
+                if part["ucs-2"] ~= nil then
+                    temp_ucs2 = temp_ucs2 .. part["ucs-2"]
+                end
+                if part["text"] ~= nil then
+                    concat_message["text"] = concat_message["text"] .. ucs2_to_utf8(temp_ucs2) .. part["text"]
+                    temp_ucs2 = ""
+                end
+            end
+        end
+        if count == concat_parts then
+            concat_message["text"] = concat_message["text"] .. ucs2_to_utf8(temp_ucs2)
+            table.insert(completed_message_map, concat_message)
+        end
+    end
+
+    return completed_message_map
+end
+
+local function forward_message(chat_id, text)
+    local body = {
+        chat_id = chat_id,
+        text = text
+    }
+
+    local handle = io.popen(string.format("wget -O- --header='Content-Type: application/json' --post-data='%s' https://api.telegram.org/bot%s/sendMessage", json.stringify(body), config.telegram_bot_key))
+    local result = handle:read("*a")
+    handle:close()
+    return json.parse(result)
+end
+
+local function delete_message(id)
+    local handle = io.popen(string.format("uqmi -d %s --delete-message %d", config.device, id))
+    local result = handle:read("*a")
+    handle:close()
+end
+
+local function delete_messages(ids)
+    for index, id in ipairs(ids) do
+        delete_message(id)
+    end
+end
+
+local methods = {
+    ucs2_to_utf8 = {
+        args = {
+            ucs2 = "ucs2"
+        },
+        call = function(args)
+            return {
+                result = ucs2_to_utf8(args.ucs2)
+            }
+        end
+    },
+    get_messages = {
+        call = function()
+            return {
+                result = get_messages()
+            }
+        end
+    },
+    delete_messages = {
+        args = {
+            ids = {0, 1, 2}
+        },
+        call = function(args)
+            delete_messages(args.ids)
+            return {
+                result = "success"
+            }
+        end
+    },
+    send_telegram = {
+        args = {
+            text = "text",
+            chat_id = 0,
+        },
+        call = function(args) 
+            return {
+                result = forward_message(args.chat_id, args.text)
+            }
+        end
+    }
+}
+
+local function parseInput()
+    local parse = json.new()
+    local done, err
+
+    while true do
+        local chunk = io.read(4096)
+        if not chunk then
+            break
+        elseif not done and not err then
+            done, err = parse:parse(chunk)
+        end
+    end
+
+    if not done then
+        print(json.stringify({
+            error = err or "Incomplete input"
+        }))
+        os.exit(1)
+    end
+
+    return parse:get()
+end
+
+local function validateArgs(func, uargs)
+    local method = methods[func]
+    if not method then
+        print(json.stringify({
+            error = "Method not found"
+        }))
+        os.exit(1)
+    end
+
+    if type(uargs) ~= "table" then
+        print(json.stringify({
+            error = "Invalid arguments"
+        }))
+        os.exit(1)
+    end
+
+    uargs.ubus_rpc_session = nil
+
+    local k, v
+    local margs = method.args or {}
+    for k, v in pairs(uargs) do
+        if margs[k] == nil or (v ~= nil and type(v) ~= type(margs[k])) then
+            print(json.stringify({
+                error = "Invalid arguments"
+            }))
+            os.exit(1)
+        end
+    end
+
+    return method
+end
+
+if arg[1] == "list" then
+    local _, method, rv = nil, nil, {}
+    for _, method in pairs(methods) do
+        rv[_] = method.args or {}
+    end
+    print((json.stringify(rv):gsub(":%[%]", ":{}")))
+elseif arg[1] == "call" then
+    local args = parseInput()
+    local method = validateArgs(arg[2], args)
+    local result, code = method.call(args)
+    print((json.stringify(result):gsub("^%[%]$", "{}")))
+    os.exit(code or 0)
+else
+    while (true) do
+        for index, value in ipairs(get_messages()) do
+            local sent = forward_message(config.telegram_chat_id, string.format("From: %s\r\nDate: %s\r\n\r\n%s", value["from"], value["date"], value["text"]))
+            if sent["ok"] then
+                delete_messages(value.ids)
+            end
+        end
+        nixio.nanosleep(20)
+    end
+end

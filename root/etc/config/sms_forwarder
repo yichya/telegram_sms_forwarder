@@ -1,0 +1,5 @@
+
+config general
+	option device /dev/cdc-wdm0
+	option telegram_bot_key 0000000000:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+	option telegram_chat_id 000000000
