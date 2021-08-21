@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=telegram_sms_forwarder
-PKG_VERSION:=0.0.1
+PKG_VERSION:=0.0.2
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MPLv2
@@ -16,7 +16,7 @@ define Package/$(PKG_NAME)
 	SECTION:=Custom
 	CATEGORY:=Extra packages
 	TITLE:=Telegram SMS Forwarder
-	DEPENDS:=+uqmi +lua +luci-lib-nixio +luci-lib-jsonc +libubus-lua +wget-ssl
+	DEPENDS:=+uqmi +lua +luci-lib-nixio +luci-lib-jsonc +libubus-lua +lua-curl-v3
 endef
 
 define Package/$(PKG_NAME)/description

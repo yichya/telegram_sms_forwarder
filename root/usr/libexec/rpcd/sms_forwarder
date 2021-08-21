@@ -1,5 +1,6 @@
 #!/usr/bin/env lua
 
+local cURL = require "cURL"
 local json = require "luci.jsonc"
 local UCI = require "luci.model.uci"
 local math = require "math"
@@ -118,10 +119,20 @@ local function forward_message(chat_id, text)
         text = text
     }
 
-    local handle = io.popen(string.format("wget -O- --header='Content-Type: application/json' --post-data='%s' https://api.telegram.org/bot%s/sendMessage", json.stringify(body), config.telegram_bot_key))
-    local result = handle:read("*a")
-    handle:close()
-    return json.parse(result)
+    local resp = {}
+    local c = cURL.easy {
+        url = string.format("https://api.telegram.org/bot%s/sendMessage", config.telegram_bot_key),
+        post = true,
+        httpheader = {"Content-Type: application/json"},
+        postfields = json.stringify(body)
+    }
+
+    c:perform({
+        writefunction = function(r)
+            resp = json.parse(r)
+        end
+    }):close()
+    return resp
 end
 
 local function delete_message(id)
@@ -136,7 +147,25 @@ local function delete_messages(ids)
     end
 end
 
+local function check()
+    for index, value in ipairs(get_messages()) do
+        local sent = forward_message(config.telegram_chat_id, string.format("From: %s\r\nDate: %s\r\n\r\n%s",
+            value["from"], value["date"], value["text"]))
+        if sent["ok"] then
+            delete_messages(value.ids)
+        end
+    end
+    return "success"
+end
+
 local methods = {
+    check_messages = {
+        call = function()
+            return {
+                result = check()
+            }
+        end
+    },
     ucs2_to_utf8 = {
         args = {
             ucs2 = "ucs2"
@@ -168,9 +197,9 @@ local methods = {
     send_telegram = {
         args = {
             text = "text",
-            chat_id = 0,
+            chat_id = 0
         },
-        call = function(args) 
+        call = function(args)
             return {
                 result = forward_message(args.chat_id, args.text)
             }
@@ -247,12 +276,7 @@ elseif arg[1] == "call" then
     os.exit(code or 0)
 else
     while (true) do
-        for index, value in ipairs(get_messages()) do
-            local sent = forward_message(config.telegram_chat_id, string.format("From: %s\r\nDate: %s\r\n\r\n%s", value["from"], value["date"], value["text"]))
-            if sent["ok"] then
-                delete_messages(value.ids)
-            end
-        end
+        check()
         nixio.nanosleep(20)
     end
 end
