@@ -34,14 +34,14 @@ local function ucs2_to_utf8(ucs2)
 end
 
 local function list_messages()
-    local handle = io.popen(string.format("uqmi -d %s --list-messages", config.device))
+    local handle = io.popen(string.format("uqmi -t 1000 -d %s --list-messages", config.device))
     local result = handle:read("*a")
     handle:close()
     return json.parse(result)
 end
 
 local function get_message_part(id)
-    local handle = io.popen(string.format("uqmi -d %s --get-message %d", config.device, id))
+    local handle = io.popen(string.format("uqmi -t 1000 -d %s --get-message %d", config.device, id))
     local result = handle:read("*a")
     handle:close()
     local parsed = json.parse(result)
@@ -136,7 +136,7 @@ local function forward_message(chat_id, text)
 end
 
 local function delete_message(id)
-    local handle = io.popen(string.format("uqmi -d %s --delete-message %d", config.device, id))
+    local handle = io.popen(string.format("uqmi -t 1000 -d %s --delete-message %d", config.device, id))
     local result = handle:read("*a")
     handle:close()
 end
