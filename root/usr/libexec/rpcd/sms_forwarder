@@ -120,12 +120,13 @@ local function forward_message(chat_id, text)
     }
 
     local resp = {}
-    local c = cURL.easy {
+    local c = cURL.easy({
         url = string.format("https://api.telegram.org/bot%s/sendMessage", config.telegram_bot_key),
         post = true,
         httpheader = {"Content-Type: application/json"},
-        postfields = json.stringify(body)
-    }
+        postfields = json.stringify(body),
+        timeout = 10,
+    })
 
     c:perform({
         writefunction = function(r)
@@ -276,7 +277,7 @@ elseif arg[1] == "call" then
     os.exit(code or 0)
 else
     while (true) do
-        check()
+        pcall(check())
         nixio.nanosleep(20)
     end
 end
