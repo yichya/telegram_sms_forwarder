@@ -277,7 +277,12 @@ elseif arg[1] == "call" then
     os.exit(code or 0)
 else
     while (true) do
-        pcall(check())
-        nixio.nanosleep(20)
+        local ok, result = pcall(check)
+        nixio.nanosleep(5)
+        if not ok then
+            os.execute("killall uqmi")
+            os.execute("uqmi --timeout 100 -d " .. config.device .. " --sync")
+        end
+        nixio.nanosleep(15)
     end
 end
