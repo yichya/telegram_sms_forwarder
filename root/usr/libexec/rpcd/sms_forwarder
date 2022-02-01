@@ -49,35 +49,52 @@ local function get_message_part(id)
     return parsed
 end
 
+local function get_message_part_raw(id, from)
+    local handle = io.popen(string.format("uqmi -t 1000 -d %s --get-raw-message %d", config.device, id))
+    local result = handle:read("*a")
+    handle:close()
+    local parsed = json.parse(result)
+    return {
+        ids = {id},
+        from = from,
+        raw = parsed
+    }
+end
+
 local function get_messages()
     local msg_ids = list_messages()
     local concat_map = {}
     local completed_message_map = {}
     for index, message_id in ipairs(msg_ids) do
         local msg = get_message_part(message_id)
-        if msg["concat_ref"] == nil then
-            local text = msg["text"]
-            if text == nil then
-                text = ucs2_to_utf8(msg["ucs-2"])
-            end
-            table.insert(completed_message_map, {
-                date = msg["timestamp"],
-                from = msg["sender"],
-                text = text,
-                ids = {message_id}
-            })
+        if msg["timestamp"] == nil then
+            local msg_raw = get_message_part_raw(message_id, msg["sender"])
+            table.insert(completed_message_map, msg_raw)
         else
-            local concat_ref = tostring(msg["concat_ref"])
-            if concat_map[concat_ref] == nil then
-                concat_map[concat_ref] = {
-                    from = msg["sender"],
-                    concat_ref = msg["concat_ref"],
-                    concat_parts = msg["concat_parts"],
+            if msg["concat_ref"] == nil then
+                local text = msg["text"]
+                if text == nil then
+                    text = ucs2_to_utf8(msg["ucs-2"])
+                end
+                table.insert(completed_message_map, {
                     date = msg["timestamp"],
-                    parts = {}
-                }
+                    from = msg["sender"],
+                    text = text,
+                    ids = {message_id}
+                })
+            else
+                local concat_ref = tostring(msg["concat_ref"])
+                if concat_map[concat_ref] == nil then
+                    concat_map[concat_ref] = {
+                        from = msg["sender"],
+                        concat_ref = msg["concat_ref"],
+                        concat_parts = msg["concat_parts"],
+                        date = msg["timestamp"],
+                        parts = {}
+                    }
+                end
+                concat_map[concat_ref]["parts"][msg["concat_part"]] = msg
             end
-            concat_map[concat_ref]["parts"][msg["concat_part"]] = msg
         end
     end
 
@@ -125,7 +142,7 @@ local function forward_message(chat_id, text)
         post = true,
         httpheader = {"Content-Type: application/json"},
         postfields = json.stringify(body),
-        timeout = 10,
+        timeout = 10
     })
 
     c:perform({
@@ -150,8 +167,13 @@ end
 
 local function check()
     for index, value in ipairs(get_messages()) do
-        local sent = forward_message(config.telegram_chat_id, string.format("From: %s\r\nDate: %s\r\n\r\n%s",
-            value["from"], value["date"], value["text"]))
+        local rendered = nil
+        if value["date"] ~= nil and value["text"] ~= nil then
+            rendered = string.format("From: %s\r\nDate: %s\r\n\r\n%s", value["from"], value["date"], value["text"])
+        else
+            rendered = string.format("From: %s\r\nRead failed.\r\nRaw: %s", value["from"], value["raw"])
+        end
+        local sent = forward_message(config.telegram_chat_id, rendered)
         if sent["ok"] then
             delete_messages(value.ids)
         end
